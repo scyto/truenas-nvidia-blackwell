@@ -61,8 +61,8 @@ jobs:
       - name: Update submodule to target release branch
         run: |
           cd scale-build
-          git fetch origin
-          git checkout "release/${{ inputs.truenas_version }}"
+          git fetch origin "release/${{ inputs.truenas_version }}"
+          git checkout FETCH_HEAD
           echo "Checked out scale-build at release/${{ inputs.truenas_version }}"
           git log --oneline -1
 
