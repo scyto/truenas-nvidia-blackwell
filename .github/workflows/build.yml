@@ -1,0 +1,243 @@
+name: Build NVIDIA Sysext
+
+on:
+  workflow_dispatch:
+    inputs:
+      truenas_version:
+        description: 'TrueNAS version (e.g., 25.10.2.1)'
+        required: true
+        default: '25.10.2.1'
+      nvidia_driver_version:
+        description: 'NVIDIA driver version (e.g., 580.126.18)'
+        required: true
+        default: '580.126.18'
+      train_name:
+        description: 'Train name (e.g., Goldeye)'
+        required: true
+        default: 'Goldeye'
+      display_mode_selector_url:
+        description: 'Optional: URL to DisplayModeSelector .run or .tar.gz (leave empty to skip)'
+        required: false
+        default: ''
+
+  workflow_call:
+    inputs:
+      truenas_version:
+        type: string
+        required: true
+      nvidia_driver_version:
+        type: string
+        required: true
+      train_name:
+        type: string
+        required: true
+      display_mode_selector_url:
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo apt-get purge -y google-cloud-cli azure-cli microsoft-edge-stable dotnet* || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean
+          echo "After cleanup:"
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Update submodule to target release branch
+        run: |
+          cd scale-build
+          git fetch origin
+          git checkout "release/${{ inputs.truenas_version }}"
+          echo "Checked out scale-build at release/${{ inputs.truenas_version }}"
+          git log --oneline -1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            debootstrap \
+            git \
+            python3-pip \
+            python3-venv \
+            squashfs-tools \
+            unzip \
+            libjson-perl \
+            rsync \
+            libarchive-tools
+
+      - name: Verify NVIDIA driver URL is accessible
+        run: |
+          DRIVER_URL="https://us.download.nvidia.com/XFree86/Linux-x86_64/${{ inputs.nvidia_driver_version }}/NVIDIA-Linux-x86_64-${{ inputs.nvidia_driver_version }}-no-compat32.run"
+          echo "Checking: ${DRIVER_URL}"
+          HTTP_CODE=$(curl -sI -o /dev/null -w "%{http_code}" "$DRIVER_URL")
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "301" ] && [ "$HTTP_CODE" != "302" ]; then
+            echo "ERROR: NVIDIA driver URL returned HTTP ${HTTP_CODE}"
+            echo "URL: ${DRIVER_URL}"
+            exit 1
+          fi
+          echo "Driver URL verified (HTTP ${HTTP_CODE})"
+
+      - name: Checkout scale-build sources
+        run: |
+          cd scale-build
+          make checkout
+
+      - name: Patch NVIDIA driver version
+        run: |
+          chmod +x scripts/patch-driver-version.sh
+          ./scripts/patch-driver-version.sh scale-build "${{ inputs.nvidia_driver_version }}"
+
+      - name: Build packages
+        run: |
+          cd scale-build
+          sudo make packages
+
+      - name: Build update image
+        run: |
+          export TRUENAS_TRAIN="TrueNAS-SCALE-${{ inputs.train_name }}"
+          export TRUENAS_VERSION="${{ inputs.truenas_version }}"
+          echo "Build Train: ${TRUENAS_TRAIN}"
+          echo "Build Version: ${TRUENAS_VERSION}"
+          cd scale-build
+          sudo -E make update
+
+      - name: Extract nvidia.raw from rootfs
+        run: |
+          cd scale-build
+          mkdir -p ./tmpfile/rootfs
+          sudo mount ./tmp/update/rootfs.squashfs ./tmpfile/rootfs
+
+          NVIDIA_RAW="./tmpfile/rootfs/usr/share/truenas/sysext-extensions/nvidia.raw"
+          if [ ! -f "$NVIDIA_RAW" ]; then
+            echo "ERROR: nvidia.raw not found in rootfs"
+            ls -la ./tmpfile/rootfs/usr/share/truenas/sysext-extensions/ || true
+            sudo umount ./tmpfile/rootfs
+            exit 1
+          fi
+
+          cp "$NVIDIA_RAW" ../nvidia.raw
+          sudo umount ./tmpfile/rootfs
+
+          echo "Extracted nvidia.raw:"
+          ls -lh ../nvidia.raw
+
+      - name: Inject DisplayModeSelector into sysext (if provided)
+        if: inputs.display_mode_selector_url != ''
+        run: |
+          echo "Downloading DisplayModeSelector..."
+          curl -fSL "${{ inputs.display_mode_selector_url }}" -o /tmp/displaymodeselector_pkg
+
+          # Unsquash the nvidia.raw to inject the tool
+          mkdir -p /tmp/nvidia-sysext
+          sudo unsquashfs -d /tmp/nvidia-sysext nvidia.raw
+
+          # Handle different package formats
+          FILE_TYPE=$(file /tmp/displaymodeselector_pkg)
+          if echo "$FILE_TYPE" | grep -q "gzip"; then
+            tar xzf /tmp/displaymodeselector_pkg -C /tmp/dms_extract
+            sudo cp /tmp/dms_extract/*/DisplayModeSelector /tmp/nvidia-sysext/usr/bin/ 2>/dev/null \
+              || sudo find /tmp/dms_extract -name "DisplayModeSelector" -exec cp {} /tmp/nvidia-sysext/usr/bin/ \;
+          elif echo "$FILE_TYPE" | grep -q "executable"; then
+            chmod +x /tmp/displaymodeselector_pkg
+            mkdir -p /tmp/dms_extract
+            /tmp/displaymodeselector_pkg --extract /tmp/dms_extract 2>/dev/null \
+              || cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/DisplayModeSelector
+            if [ -d /tmp/dms_extract ]; then
+              sudo find /tmp/dms_extract -name "DisplayModeSelector" -exec cp {} /tmp/nvidia-sysext/usr/bin/ \;
+            fi
+          else
+            echo "WARNING: Unknown package format, attempting direct copy"
+            sudo cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/DisplayModeSelector
+          fi
+
+          sudo chmod +x /tmp/nvidia-sysext/usr/bin/DisplayModeSelector 2>/dev/null || true
+
+          # Re-create squashfs
+          sudo mksquashfs /tmp/nvidia-sysext nvidia.raw -noappend -comp zstd
+          echo "Rebuilt nvidia.raw with DisplayModeSelector:"
+          ls -lh nvidia.raw
+
+      - name: List sysext contents
+        run: |
+          echo "=== nvidia.raw sysext contents (key binaries) ==="
+          mkdir -p /tmp/sysext-check
+          sudo unsquashfs -l nvidia.raw | grep -E '(nvidia-smi|nvidia-persistenced|nvidia-fabric|DisplayMode|nvidia-cuda-mps|usr/bin/|usr/lib/x86_64)' | head -50
+          echo "=== Full size ==="
+          ls -lh nvidia.raw
+
+      - name: Generate checksums
+        run: |
+          sha256sum nvidia.raw > nvidia.raw.sha256
+          cat nvidia.raw.sha256
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts/extensions
+          mv nvidia.raw artifacts/extensions/
+          mv nvidia.raw.sha256 artifacts/extensions/
+          cp scale-build/tmp/release/manifest.json artifacts/ 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvidia-sysext-${{ inputs.truenas_version }}-driver-${{ inputs.nvidia_driver_version }}
+          path: |
+            artifacts/extensions/nvidia.raw
+            artifacts/extensions/nvidia.raw.sha256
+            artifacts/manifest.json
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.truenas_version }}-nvidia${{ inputs.nvidia_driver_version }}
+          name: "TrueNAS ${{ inputs.truenas_version }} - NVIDIA ${{ inputs.nvidia_driver_version }}"
+          body: |
+            ## NVIDIA Sysext for TrueNAS SCALE ${{ inputs.truenas_version }} (${{ inputs.train_name }})
+
+            **NVIDIA Driver:** ${{ inputs.nvidia_driver_version }}
+            **Kernel Modules:** Open (required for Blackwell)
+            **Target GPU:** RTX PRO 6000 Blackwell Workstation Edition (MIG-capable)
+
+            ### Included Utilities
+            - `nvidia-smi` — GPU management and monitoring
+            - `nvidia-persistenced` — Persistent daemon for GPU state
+            - `nvidia-cuda-mps-control` / `nvidia-cuda-mps-server` — Multi-Process Service
+            - All standard NVIDIA driver userspace utilities
+
+            ### MIG Support
+            Supports Multi-Instance GPU on RTX PRO 6000 Blackwell:
+            - Up to **4x 24GB** instances or **2x 48GB** instances
+            - Workstation Edition: set display mode to **compute** before enabling MIG
+
+            ### Install
+            ```bash
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ inputs.truenas_version }}-nvidia${{ inputs.nvidia_driver_version }}/install.sh | sudo bash
+            ```
+
+            ### Checksums
+            See `nvidia.raw.sha256` for verification.
+          files: |
+            artifacts/extensions/nvidia.raw
+            artifacts/extensions/nvidia.raw.sha256
+            scripts/install.sh
+            scripts/restore.sh
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
