@@ -44,7 +44,7 @@ jobs:
   # ─── Job 1: Build all TrueNAS packages (~5-6h first run, skipped on cache hit) ─
   build-packages:
     runs-on: ubuntu-22.04
-    timeout-minutes: 355
+    timeout-minutes: 360
 
     steps:
       - name: Free disk space
