@@ -36,8 +36,12 @@ on:
         required: false
         default: ''
 
+env:
+  # Cache keys
+  PACKAGES_CACHE_KEY: packages-${{ inputs.truenas_version || '25.10.2.1' }}
+
 jobs:
-  # ─── Job 1: Build all TrueNAS packages (heaviest step, ~5-6h) ────────────
+  # ─── Job 1: Build all TrueNAS packages (~5-6h first run, skipped on cache hit) ─
   build-packages:
     runs-on: ubuntu-22.04
     timeout-minutes: 355
@@ -67,8 +71,18 @@ jobs:
           echo "Checked out scale-build at release/${{ inputs.truenas_version }}"
           git log --oneline -1
 
+      - name: Restore APT cache
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-deps-${{ runner.os }}-v1
+
       - name: Install build dependencies
         run: |
+          # Restore cached debs if available
+          if [ -d ~/apt-cache ]; then
+            sudo cp ~/apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
@@ -82,6 +96,9 @@ jobs:
             rsync \
             libarchive-tools \
             zstd
+          # Save debs for cache
+          mkdir -p ~/apt-cache
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
 
       - name: Verify NVIDIA driver URL is accessible
         run: |
@@ -95,37 +112,59 @@ jobs:
           fi
           echo "Driver URL verified (HTTP ${HTTP_CODE})"
 
+      # Check if we have cached packages for this TrueNAS version.
+      # If so, we can skip the expensive make checkout + make packages steps.
+      - name: Check for cached packages
+        id: packages-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/build-state.tar.zst
+          key: ${{ env.PACKAGES_CACHE_KEY }}
+
       - name: Checkout scale-build sources
+        if: steps.packages-cache.outputs.cache-hit != 'true'
         run: |
           cd scale-build
           make checkout
 
       - name: Patch NVIDIA driver version
+        if: steps.packages-cache.outputs.cache-hit != 'true'
         run: |
           chmod +x scripts/patch-driver-version.sh
           ./scripts/patch-driver-version.sh scale-build "${{ inputs.nvidia_driver_version }}"
 
       - name: Build packages
+        if: steps.packages-cache.outputs.cache-hit != 'true'
         run: |
           cd scale-build
           sudo make packages
 
       - name: Compress built packages for transfer
+        if: steps.packages-cache.outputs.cache-hit != 'true'
         run: |
           cd scale-build
-          echo "Package directory size:"
+          echo "=== Package directory sizes ==="
           du -sh tmp/pkgdir/ tmp/cache/ 2>/dev/null || true
-          # Compress pkgdir (built .deb packages + apt repo metadata) and cache (bootstrap cache)
+          # Compress pkgdir (built .deb packages + apt repo metadata) and cache (bootstrap caches)
           sudo tar -cf - -C tmp pkgdir cache 2>/dev/null | zstd -T0 -3 -o /tmp/build-state.tar.zst
           echo "Compressed archive size:"
           ls -lh /tmp/build-state.tar.zst
 
-      - name: Upload build state
+      - name: Report cache status
+        run: |
+          if [ "${{ steps.packages-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Using cached packages for TrueNAS ${{ inputs.truenas_version }}"
+            ls -lh /tmp/build-state.tar.zst
+          else
+            echo "Packages built from source and cached for future runs"
+          fi
+
+      - name: Upload build state as artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-state-${{ inputs.truenas_version }}
           path: /tmp/build-state.tar.zst
-          retention-days: 1
+          retention-days: 3
           compression-level: 0  # Already compressed with zstd
 
   # ─── Job 2: Build update image and extract nvidia.raw (~1-2h) ─────────────
@@ -146,6 +185,23 @@ jobs:
           echo "After cleanup:"
           df -h /
 
+      - name: Add swap space for tmpfs backing
+        run: |
+          # The scale-build system mounts a 25GB tmpfs for the rootfs chroot.
+          # It needs ~20GB+ during extension building (3 copies of rootfs).
+          # GitHub runners have 7GB RAM + ~4GB swap = ~11GB, which is insufficient.
+          # Add 16GB swap to provide enough tmpfs backing.
+          echo "Current swap:"
+          free -h | grep -i swap
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "After adding swap:"
+          free -h | grep -i swap
+          echo "Total memory + swap available for tmpfs:"
+          awk '/MemTotal|SwapTotal/{printf "%s: %s\n", $1, $2}' /proc/meminfo
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -159,8 +215,17 @@ jobs:
           echo "Checked out scale-build at release/${{ inputs.truenas_version }}"
           git log --oneline -1
 
+      - name: Restore APT cache
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-deps-${{ runner.os }}-v1
+
       - name: Install build dependencies
         run: |
+          if [ -d ~/apt-cache ]; then
+            sudo cp ~/apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          fi
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
@@ -174,6 +239,8 @@ jobs:
             rsync \
             libarchive-tools \
             zstd
+          mkdir -p ~/apt-cache
+          cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
 
       - name: Patch NVIDIA driver version
         run: |
@@ -193,12 +260,12 @@ jobs:
           zstd -d /tmp/build-state.tar.zst --stdout | sudo tar xf - -C tmp/
           rm /tmp/build-state.tar.zst
           echo "Restored packages:"
-          ls -la tmp/pkgdir/ | head -20
-          echo "..."
-          ls tmp/pkgdir/ | wc -l
-          echo "total .deb files"
+          ls tmp/pkgdir/*.deb 2>/dev/null | wc -l
+          echo ".deb files"
           echo "Cache contents:"
-          ls -la tmp/cache/ 2>/dev/null || echo "(no cache)"
+          ls -lh tmp/cache/ 2>/dev/null || echo "(no cache)"
+          echo "Disk space:"
+          df -h /
 
       - name: Build update image
         run: |
