@@ -38,6 +38,7 @@ skip_binaries = {
     'scstadmin',
     'midcli',
     'middlewared-docs',
+    'truenas',
 }
 
 # Remove skipped top-level sources
