@@ -217,6 +217,11 @@ jobs:
           echo "Caches have been saved — next run will resume from where this one stopped."
           exit 1
 
+      - name: Create dummy packages for failed builds
+        run: |
+          chmod +x scripts/create-dummy-packages.sh
+          ./scripts/create-dummy-packages.sh scale-build
+
       - name: Compress built packages for transfer to Job 2
         run: |
           cd scale-build
@@ -325,21 +330,6 @@ jobs:
         run: |
           chmod +x scripts/strip-debug-packages.sh
           ./scripts/strip-debug-packages.sh scale-build
-
-      - name: Patch scale-build for stripped packages
-        run: |
-          # With truenas/scst packages stripped, systemd-sysv-generator may not
-          # create multi-user.target.wants dir. Ensure it exists before listing.
-          python3 -c "
-          import pathlib
-          p = pathlib.Path('scale-build/scale_build/image/update.py')
-          code = p.read_text()
-          old = \"for f in os.listdir(os.path.join(tmp_systemd, 'multi-user.target.wants')):\"
-          new = \"os.makedirs(os.path.join(tmp_systemd, 'multi-user.target.wants'), exist_ok=True)\n    for f in os.listdir(os.path.join(tmp_systemd, 'multi-user.target.wants')):\"
-          code = code.replace(old, new)
-          p.write_text(code)
-          print('Patched update.py: ensured multi-user.target.wants dir exists')
-          "
 
       - name: Download build state from Job 1
         uses: actions/download-artifact@v4
