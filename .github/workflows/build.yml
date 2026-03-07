@@ -356,11 +356,16 @@ jobs:
         run: |
           # unsquashfs -dest creates the target dir itself and fails if it exists.
           # scale-build's extensions.py calls os.makedirs before unsquashfs, causing
-          # "failed to make directory, because File exists". Remove the makedirs.
-          cd scale-build
-          sed -i '/os.makedirs(chroot_base)/d' scale_build/extensions.py
-          sed -i '/os.makedirs(chroot)/d' scale_build/extensions.py
-          echo "Patched extensions.py"
+          # "failed to make directory, because File exists". Remove the makedirs lines.
+          python3 -c "
+          import pathlib
+          p = pathlib.Path('scale-build/scale_build/extensions.py')
+          lines = p.read_text().splitlines(keepends=True)
+          out = [l for l in lines if 'os.makedirs(chroot' not in l and 'os.makedirs(self.chroot)' not in l]
+          p.write_text(''.join(out))
+          removed = len(lines) - len(out)
+          print(f'Patched extensions.py: removed {removed} os.makedirs line(s)')
+          "
 
       - name: Build update image
         run: |
