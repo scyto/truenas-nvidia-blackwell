@@ -18,6 +18,15 @@ TrueNAS 25.10 "Goldeye" ships with NVIDIA driver **570.172.08**. However, MIG on
 
 That repo removes `--kernel-module-type=open` to support **legacy GPUs** (Maxwell, Pascal, Volta). This repo keeps open kernel modules (mandatory for Blackwell) and instead changes the **driver version**.
 
+## Prerequisites
+
+- TrueNAS SCALE 25.10 "Goldeye" or later
+- NVIDIA RTX PRO 6000 Blackwell Workstation Edition (or other Blackwell GPU requiring R575+ drivers)
+- The stock TrueNAS NVIDIA driver can be either **enabled or already removed** — the script handles both cases
+- SSH access to the TrueNAS server (the script will temporarily stop Docker and all apps)
+
+The install script works for both **fresh installs** (no prior NVIDIA driver) and **upgrades** (replacing the stock iXsystems driver). On a fresh install, the script will prompt you to assign MIG devices to apps interactively. On subsequent reboots, the MIG setup service automatically remaps app GPU UUIDs to match newly-created MIG instances.
+
 ## Quick Install
 
 ```bash
