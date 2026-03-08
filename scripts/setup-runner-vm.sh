@@ -112,13 +112,8 @@ else
 fi
 
 echo "=== Step 2: Verify required tools ==="
-# cloud-localds creates a seed ISO for cloud-init. If it's not available,
-# we can use genisoimage or xorriso directly (TrueNAS blocks apt-get).
-if ! command -v cloud-localds &>/dev/null && \
-   ! command -v genisoimage &>/dev/null && \
-   ! command -v xorriso &>/dev/null; then
-  echo "ERROR: Need cloud-localds, genisoimage, or xorriso to create cloud-init seed."
-  echo "None of these are available on this system."
+if ! command -v python3 &>/dev/null; then
+  echo "ERROR: python3 is required but not found."
   exit 1
 fi
 
@@ -262,15 +257,104 @@ local-hostname: ${VM_NAME}
 METADATA
 
 SEED_IMG="/mnt/${POOL}/isos/${VM_NAME}-seed.img"
-if command -v cloud-localds &>/dev/null; then
-  cloud-localds "${SEED_IMG}" ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
-elif command -v genisoimage &>/dev/null; then
-  genisoimage -output "${SEED_IMG}" -volid cidata -joliet -rock \
-    ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
-elif command -v xorriso &>/dev/null; then
-  xorriso -as genisoimage -output "${SEED_IMG}" -volid cidata -joliet -rock \
-    ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
-fi
+# Create a minimal ISO9660 "cidata" image with user-data and meta-data.
+# This replaces cloud-localds/genisoimage which aren't available on TrueNAS.
+python3 - "${SEED_IMG}" "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" <<'PYEOF'
+import struct, sys, os, time
+
+def pad(data, block=2048):
+    r = len(data) % block
+    return data + b'\x00' * (block - r) if r else data
+
+def dir_record(name, lba, size, is_dir=False, raw_name=None):
+    n = raw_name if raw_name else name.encode()
+    rec_len = 33 + len(n)
+    if rec_len % 2: rec_len += 1
+    flags = 0x02 if is_dir else 0x00
+    now = time.gmtime()
+    date = struct.pack('7B', now.tm_year - 1900, now.tm_mon, now.tm_mday,
+                       now.tm_hour, now.tm_min, now.tm_sec, 0)
+    rec = struct.pack('<B', rec_len)
+    rec += b'\x00'  # ext attr length
+    rec += struct.pack('<I', lba) + struct.pack('>I', lba)
+    rec += struct.pack('<I', size) + struct.pack('>I', size)
+    rec += date
+    rec += struct.pack('B', flags)
+    rec += b'\x00\x00'  # file unit size, interleave
+    rec += struct.pack('<H', 1) + struct.pack('>H', 1)  # volume seq
+    rec += struct.pack('B', len(n))
+    rec += n
+    if len(rec) % 2: rec += b'\x00'
+    return rec
+
+def volume_descriptor(vol_id, root_lba, root_size, path_table_lba, total_blocks):
+    vd = struct.pack('B', 1) + b'CD001' + b'\x01' + b'\x00'  # type, id, version, unused
+    vd += b' ' * 32  # system id
+    vd += vol_id.encode().ljust(32)  # volume id
+    vd += b'\x00' * 8  # unused
+    vd += struct.pack('<I', total_blocks) + struct.pack('>I', total_blocks)
+    vd += b'\x00' * 32  # unused
+    vd += struct.pack('<H', 1) + struct.pack('>H', 1)  # volume set size
+    vd += struct.pack('<H', 1) + struct.pack('>H', 1)  # volume seq number
+    vd += struct.pack('<H', 2048) + struct.pack('>H', 2048)  # block size
+    pt_size = 10 + 1  # one entry for root
+    vd += struct.pack('<I', pt_size) + struct.pack('>I', pt_size)
+    vd += struct.pack('<I', path_table_lba)  # L path table
+    vd += struct.pack('<I', 0)  # optional L path table
+    vd += struct.pack('>I', path_table_lba + 1)  # M path table
+    vd += struct.pack('>I', 0)  # optional M path table
+    root_rec = dir_record('.', root_lba, root_size, is_dir=True, raw_name=b'\x00')
+    vd += root_rec.ljust(34, b'\x00')
+    vd += b' ' * 128  # volume set id
+    vd += b' ' * 128  # publisher
+    vd += b' ' * 128  # data preparer
+    vd += b' ' * 128  # application
+    vd += b' ' * 37 * 3  # copyright, abstract, biblio
+    vd += b'0000000000000000\x00' * 2  # creation, modification dates
+    vd += b'0000000000000000\x00' * 2  # expiration, effective dates
+    vd += b'\x01' + b'\x00'  # file structure version, reserved
+    return vd.ljust(2048, b'\x00')
+
+out_path, ud_path, md_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(ud_path, 'rb') as f: ud = f.read()
+with open(md_path, 'rb') as f: md = f.read()
+
+# Layout: 16 system blocks, PVD, terminator, path tables (L+M), root dir, files
+pt_lba = 18
+root_lba = 20
+file1_lba = 21
+file1_blocks = (len(ud) + 2047) // 2048
+file2_lba = file1_lba + file1_blocks
+file2_blocks = (len(md) + 2047) // 2048
+total = file2_lba + file2_blocks
+
+# Root directory entries
+root_data = dir_record('.', root_lba, 2048, is_dir=True, raw_name=b'\x00')
+root_data += dir_record('..', root_lba, 2048, is_dir=True, raw_name=b'\x01')
+root_data += dir_record('USER-DATA', file1_lba, len(ud), raw_name=b'USER_DATA.;1')
+root_data += dir_record('META-DATA', file2_lba, len(md), raw_name=b'META_DATA.;1')
+root_data = root_data.ljust(2048, b'\x00')
+
+# Path table (little-endian)
+pt_l = struct.pack('<BBI', 1, 0, root_lba) + struct.pack('>H', 1) + b'\x00'
+pt_l = pt_l.ljust(2048, b'\x00')
+# Path table (big-endian)
+pt_m = struct.pack('<BB', 1, 0) + struct.pack('>I', root_lba) + struct.pack('>H', 1) + b'\x00'
+pt_m = pt_m.ljust(2048, b'\x00')
+
+iso = b'\x00' * 2048 * 16  # system area
+iso += volume_descriptor('cidata', root_lba, 2048, pt_lba, total)
+# Terminator
+iso += struct.pack('B', 255) + b'CD001' + b'\x01'
+iso = iso.ljust(2048 * 18, b'\x00')
+iso += pt_l + pt_m
+iso += root_data
+iso += pad(ud)
+iso += pad(md)
+
+with open(out_path, 'wb') as f: f.write(iso)
+print(f"Created seed ISO: {out_path} ({len(iso)} bytes)")
+PYEOF
 
 rm -rf ${SEED_DIR}
 echo "Seed image created: /mnt/${POOL}/isos/${VM_NAME}-seed.img"
