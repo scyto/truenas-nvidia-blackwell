@@ -134,6 +134,17 @@ fi
 
 echo ""
 echo "=== Installing nvidia.raw ==="
+echo ""
+echo "WARNING: This will temporarily stop Docker and all TrueNAS apps"
+echo "while the NVIDIA sysext is being replaced."
+echo ""
+if [ -e /dev/tty ]; then
+    printf "Continue? [Y/n] " >&2
+    read -r confirm </dev/tty || confirm="y"
+    case "$confirm" in
+        [nN]*) echo "Aborted."; exit 0 ;;
+    esac
+fi
 
 # Disable NVIDIA support temporarily
 echo "Disabling NVIDIA support..."
@@ -398,22 +409,30 @@ MIGEOF
             echo ""
 
             # Build MIG device list with types
-            # Correlate -lgi (profile IDs + GI IDs) with -L (UUIDs) by position
-            mapfile -t MIG_UUIDS < <(nvidia-smi -L 2>/dev/null | grep -oP 'MIG.*UUID:\s+\K[^)]+')
-            mapfile -t MIG_NAMES < <(nvidia-smi -L 2>/dev/null | grep 'MIG' | sed 's/.*MIG /MIG /' | sed 's/Device.*//')
-            mapfile -t MIG_PROFILE_IDS < <(nvidia-smi mig -lgi 2>/dev/null | grep -oP 'Profile ID\s+:\s+\K[0-9]+')
+            # Use MIG_PROFILES order (matches creation order = UUID order)
+            mapfile -t MIG_UUIDS < <(nvidia-smi -L 2>/dev/null | grep -oP 'UUID:\s+\KMIG-[^)]+')
+            mapfile -t MIG_NAMES < <(nvidia-smi -L 2>/dev/null | grep 'MIG' | sed 's/.*MIG /MIG /' | sed 's/[[:space:]]*Device.*//')
+            IFS=',' read -ra PROFILE_ARRAY <<< "$MIG_PROFILES"
 
             echo "=== MIG Devices ==="
             for i in "${!MIG_UUIDS[@]}"; do
-                pid="${MIG_PROFILE_IDS[$i]:-unknown}"
+                pid="${PROFILE_ARRAY[$i]:-unknown}"
                 case "$pid" in
-                    47|35|32) dtype="gfx+compute" ;;
-                    14|5|0)   dtype="compute-only" ;;
-                    64|21|65) dtype="compute+media" ;;
-                    67|66)    dtype="compute (no media)" ;;
-                    *)        dtype="unknown" ;;
+                    47) dtype="gfx + compute (1g.24gb)" ;;
+                    35) dtype="gfx + compute (2g.48gb)" ;;
+                    32) dtype="gfx + compute (4g.96gb)" ;;
+                    14) dtype="compute only (1g.24gb)" ;;
+                    5)  dtype="compute only (2g.48gb)" ;;
+                    0)  dtype="compute only (4g.96gb)" ;;
+                    64) dtype="compute + all media engines (2g.48gb)" ;;
+                    21) dtype="compute + all media engines (1g.24gb)" ;;
+                    65) dtype="compute + all media engines (1g.24gb)" ;;
+                    67) dtype="compute, no media (1g.24gb)" ;;
+                    66) dtype="compute, no media (2g.48gb)" ;;
+                    *)  dtype="profile $pid" ;;
                 esac
-                echo "  [$((i+1))] ${MIG_NAMES[$i]:-MIG}  (${dtype})  ${MIG_UUIDS[$i]}"
+                echo "  [$((i+1))] ${MIG_NAMES[$i]:-MIG}  —  ${dtype}"
+                echo "        ${MIG_UUIDS[$i]}"
             done
 
             # Get PCI slot for GPU assignments
@@ -430,45 +449,69 @@ except Exception:
     pass
 " 2>/dev/null)
 
-            # Get list of TrueNAS apps
-            mapfile -t APP_NAMES < <(midclt call app.query 2>/dev/null \
-                | python3 -c "
-import sys, json
-try:
-    apps = json.load(sys.stdin)
-    for app in apps:
-        print(app.get('name', ''))
-except Exception:
-    pass
-" 2>/dev/null)
-
-            # Show current app GPU assignments
+            # Wait for app service to be ready (Docker was just re-enabled)
             echo ""
-            echo "Current app GPU assignments:"
-            midclt call app.query 2>/dev/null | python3 -c "
+            echo "Waiting for TrueNAS app service..."
+            for attempt in 1 2 3 4 5 6; do
+                APP_COUNT=$(midclt call app.query 2>/dev/null | python3 -c "
+import sys, json
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    print(0)
+" 2>/dev/null)
+                if [ "${APP_COUNT:-0}" -gt 0 ]; then
+                    echo "App service ready (${APP_COUNT} apps found)"
+                    break
+                fi
+                [ "$attempt" -lt 6 ] && sleep 5
+            done
+
+            # Get list of TrueNAS apps with current GPU assignments
+            APP_DATA=$(midclt call app.query 2>/dev/null | python3 -c "
 import sys, json
 try:
     apps = json.load(sys.stdin)
-    found = False
     for app in apps:
         name = app.get('name', '')
+        if not name:
+            continue
         config = app.get('config', {}) or {}
         resources = config.get('resources', {}) or {}
         gpus = resources.get('gpus', {}) or {}
         gpu_sel = gpus.get('nvidia_gpu_selection', {}) or {}
+        current_uuid = ''
         for slot, slot_cfg in gpu_sel.items():
             if isinstance(slot_cfg, dict) and slot_cfg.get('use_gpu'):
-                uuid = slot_cfg.get('uuid', 'none')
-                print(f'  {name}: {uuid}')
-                found = True
-    if not found:
-        print('  (no apps with GPU assignments)')
+                current_uuid = slot_cfg.get('uuid', '')
+        print(f'{name}|{current_uuid}')
 except Exception:
-    print('  (could not query apps)')
-" 2>/dev/null || echo "  (could not query apps)"
+    pass
+" 2>/dev/null)
+
+            mapfile -t APP_LINES <<< "$APP_DATA"
+            APP_NAMES=()
+            APP_CURRENT_UUIDS=()
+            for line in "${APP_LINES[@]}"; do
+                [ -z "$line" ] && continue
+                APP_NAMES+=("${line%%|*}")
+                APP_CURRENT_UUIDS+=("${line##*|}")
+            done
+
+            # Show current app GPU assignments
+            echo ""
+            echo "Current app GPU assignments:"
+            has_assignments=false
+            for i in "${!APP_NAMES[@]}"; do
+                if [ -n "${APP_CURRENT_UUIDS[$i]}" ]; then
+                    echo "  ${APP_NAMES[$i]}: ${APP_CURRENT_UUIDS[$i]}"
+                    has_assignments=true
+                fi
+            done
+            [ "$has_assignments" = "false" ] && echo "  (no apps with GPU assignments)"
 
             # Interactive assignment (only if we have apps, a PCI slot, and a tty)
-            if [ "${#APP_NAMES[@]}" -gt 0 ] && [ -n "$PCI_SLOT" ] && [ -t 0 ] || [ -e /dev/tty ]; then
+            if [ "${#APP_NAMES[@]}" -gt 0 ] && [ -n "$PCI_SLOT" ] && [ -e /dev/tty ]; then
                 echo ""
                 echo "=== Assign MIG devices to apps ==="
                 echo "Available apps:"
@@ -481,12 +524,8 @@ except Exception:
                 echo "Press Enter on a blank line when done."
                 echo ""
                 while true; do
-                    printf "Assign: " >&2
-                    if [ -t 0 ]; then
-                        read -r assignment
-                    else
-                        read -r assignment </dev/tty || break
-                    fi
+                    printf "Assign: "
+                    read -r assignment </dev/tty || break
                     [ -z "$assignment" ] && break
 
                     dev_num="${assignment%%=*}"
