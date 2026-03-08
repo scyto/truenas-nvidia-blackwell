@@ -376,9 +376,8 @@ echo "Created VM ID: ${VM_ID}"
 echo "  Adding disk..."
 midclt call vm.device.create "{
   \"vm\": ${VM_ID},
-  \"dtype\": \"DISK\",
-  \"order\": 1001,
   \"attributes\": {
+    \"dtype\": \"DISK\",
     \"path\": \"/dev/zvol/${POOL}/${VM_NAME}-disk\",
     \"type\": \"VIRTIO\"
   }
@@ -388,9 +387,8 @@ midclt call vm.device.create "{
 echo "  Adding cloud-init seed..."
 midclt call vm.device.create "{
   \"vm\": ${VM_ID},
-  \"dtype\": \"CDROM\",
-  \"order\": 1004,
   \"attributes\": {
+    \"dtype\": \"CDROM\",
     \"path\": \"/mnt/${POOL}/isos/${VM_NAME}-seed.img\"
   }
 }"
@@ -400,26 +398,24 @@ echo "  Adding NIC..."
 MAC=$(midclt call vm.random_mac)
 midclt call vm.device.create "{
   \"vm\": ${VM_ID},
-  \"dtype\": \"NIC\",
-  \"order\": 1003,
   \"attributes\": {
+    \"dtype\": \"NIC\",
     \"type\": \"VIRTIO\",
     \"nic_attach\": \"${NIC_BRIDGE}\",
     \"mac\": ${MAC}
   }
 }"
 
-# VNC display (for debugging)
-echo "  Adding VNC display..."
+# SPICE display (for debugging via TrueNAS UI)
+echo "  Adding SPICE display..."
 midclt call vm.device.create "{
   \"vm\": ${VM_ID},
-  \"dtype\": \"DISPLAY\",
-  \"order\": 1005,
   \"attributes\": {
-    \"web\": true,
-    \"type\": \"VNC\",
+    \"dtype\": \"DISPLAY\",
+    \"type\": \"SPICE\",
     \"bind\": \"0.0.0.0\",
-    \"wait\": false
+    \"web\": true,
+    \"password\": \"${RUNNER_PASS}\"
   }
 }"
 
