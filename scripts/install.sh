@@ -449,10 +449,12 @@ except Exception:
     pass
 " 2>/dev/null)
 
-            # Wait for app service to be ready (Docker was just re-enabled)
+            # Wait for Docker and app service to be ready (Docker was just re-enabled)
             echo ""
-            echo "Waiting for TrueNAS app service..."
-            for attempt in 1 2 3 4 5 6; do
+            echo "Waiting for Docker and app service to come up (this can take 60-90s)..."
+            MAX_WAIT=18  # 18 × 5s = 90s
+            APP_COUNT=0
+            for attempt in $(seq 1 $MAX_WAIT); do
                 APP_COUNT=$(midclt call app.query 2>/dev/null | python3 -c "
 import sys, json
 try:
@@ -461,10 +463,20 @@ except Exception:
     print(0)
 " 2>/dev/null)
                 if [ "${APP_COUNT:-0}" -gt 0 ]; then
+                    echo ""
                     echo "App service ready (${APP_COUNT} apps found)"
                     break
                 fi
-                [ "$attempt" -lt 6 ] && sleep 5
+
+                if [ "$attempt" -lt "$MAX_WAIT" ]; then
+                    printf "\r  Waiting... %ds / %ds" "$((attempt * 5))" "$((MAX_WAIT * 5))"
+                    sleep 5
+                else
+                    echo ""
+                    echo "WARNING: Timed out waiting for apps after $((MAX_WAIT * 5))s."
+                    echo "  You can assign MIG devices to apps later via TrueNAS UI or:"
+                    echo "  midclt call app.update APP_NAME '{\"values\":{\"resources\":{\"gpus\":{...}}}}'"
+                fi
             done
 
             # Get list of TrueNAS apps with current GPU assignments
