@@ -74,9 +74,7 @@ The sysext includes all standard NVIDIA driver userspace tools:
 
 Reference: [NVIDIA Getting Started with MIG](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html)
 
-### Prerequisites
-
-#### 1. Obtain displaymodeselector
+### Step 1: Obtain displaymodeselector
 
 The `displaymodeselector` tool is required to switch the GPU to compute display mode before MIG can be enabled. It is not included in the standard NVIDIA driver package.
 
@@ -91,60 +89,114 @@ The install script will automatically detect it in your home directory and injec
 
 > **Warning**: NVIDIA notes that setting a non-default display mode on an unqualified system could cause issues. The RTX PRO 6000 Blackwell Workstation Edition is qualified for compute mode.
 
-#### 2. Switch to compute display mode
+### Step 2: Switch to compute display mode
 
-This disables physical display output on single-card systems. Ensure SSH access is available before proceeding.
+This disables physical display output on single-card systems. **Ensure SSH access is available before proceeding** — you will lose any connected display.
+
+TrueNAS mounts `/home`, `/tmp`, and `/data` with `noexec`, so `displaymodeselector` must be run from `/usr/bin` (installed via the sysext) or via the dynamic linker.
 
 ```bash
-# Use displaymodeselector v1.72.0+
 sudo displaymodeselector --gpumode compute
-# Reboot required after this step
+# Reboot required for the change to take effect
 sudo reboot
 ```
 
-#### 3. Verify vBIOS meets minimum requirements for your card
+### Step 3: Enable MIG mode
 
-### Enable MIG
+After reboot, stop all GPU workloads and enable MIG:
 
 ```bash
+# Stop Docker/apps using the GPU
+sudo midclt call docker.update '{"nvidia": false}'
+
 # Enable MIG mode
 sudo nvidia-smi -i 0 -mig 1
 
-# Verify
+# Verify (should show "Enabled")
 nvidia-smi --query-gpu=mig.mode.current --format=csv
 ```
 
-### Create GPU Instances
+### Step 4: Create GPU instances
+
+The RTX PRO 6000 Blackwell supports these MIG profiles:
+
+| Profile | ID | Max Instances | Memory | Notes |
+|---|---|---|---|---|
+| 1g.24gb | 14 | 4 | 23.6 GB | Compute only |
+| 1g.24gb+gfx | 47 | 4 | 23.6 GB | Compute + graphics APIs |
+| 2g.48gb | 5 | 2 | 47.4 GB | Compute only |
+| 2g.48gb+gfx | 35 | 2 | 47.4 GB | Compute + graphics APIs |
+| 4g.96gb | 0 | 1 | 95.0 GB | Full GPU, compute only |
+| 4g.96gb+gfx | 32 | 1 | 95.0 GB | Full GPU, compute + graphics |
+
+The `+gfx` profiles are unique to the RTX PRO 6000 Blackwell — they support OpenGL, Vulkan, and DirectX within MIG instances. Standard (non-gfx) profiles support CUDA compute only. You can mix `+gfx` and standard profiles.
 
 ```bash
-# List available profiles
+# List available profiles on your card
 nvidia-smi mig -lgip
 
-# Create instances (examples):
-# 4x 24GB instances (profile 14):
+# Examples:
+# 4x 24GB compute-only instances:
 sudo nvidia-smi mig -cgi 14,14,14,14 -C
 
-# 2x 48GB instances (profile 5):
+# 2x 48GB compute-only instances:
 sudo nvidia-smi mig -cgi 5,5 -C
 
-# 1x 96GB full GPU (profile 0):
+# 1x 96GB full GPU:
 sudo nvidia-smi mig -cgi 0 -C
 
-# With graphics API support (unique to RTX PRO 6000 Blackwell):
-# 4x 24GB +gfx (profile 47):
-sudo nvidia-smi mig -cgi 47,47,47,47 -C
+# Mixed: 2x gfx + 2x compute (all 24GB):
+sudo nvidia-smi mig -cgi 47,47,14,14 -C
 
 # Verify
 nvidia-smi mig -lgi
 nvidia-smi
 ```
 
+### Step 5: Assign MIG devices to TrueNAS apps
+
+TrueNAS apps require a GPU UUID to be assigned via `midclt`. With MIG enabled, each instance gets its own UUID.
+
+```bash
+# List MIG device UUIDs
+nvidia-smi -L
+```
+
+This outputs something like:
+
+```text
+GPU 0: NVIDIA RTX PRO 6000 Blackwell Workstation Edition (UUID: GPU-...)
+  MIG 1g.24gb     Device  0: (UUID: MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+  MIG 1g.24gb     Device  1: (UUID: MIG-yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy)
+  ...
+```
+
+To identify compute-only vs gfx instances, cross-reference with the GPU instance list:
+
+```bash
+nvidia-smi mig -lgi
+```
+
+Instances with profile ID 14 are compute-only; profile ID 47 are +gfx.
+
+To assign a MIG device to a TrueNAS app:
+
+```bash
+# First, find your GPU's PCI slot
+midclt call app.gpu_choices | python3 -m json.tool
+
+# Then update the app to use a specific MIG UUID
+midclt call -job app.update "APP_NAME" '{"values": {"resources": {"gpus": {"use_all_gpus": false, "nvidia_gpu_selection": {"PCI_SLOT": {"use_gpu": true, "uuid": "MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"}}}}}}'
+```
+
+Replace `APP_NAME` with your app name (e.g., `plex`, `frigate`), `PCI_SLOT` with the PCI address from `app.gpu_choices` (e.g., `0000:0f:00.0`), and the UUID with the MIG device UUID from `nvidia-smi -L`.
+
 ### Important Notes
 
-- MIG devices are **not persistent across reboots**. Use [nvidia-mig-parted](https://github.com/NVIDIA/mig-parted) for automation.
-- Stop all driver-holding daemons (nvsm, dcgm, Docker) before enabling/disabling MIG mode.
-- RTX PRO 6000 Blackwell uniquely supports **graphics APIs in MIG mode**.
-- On Hopper+ GPUs, MIG mode is non-persistent without driver modules loaded.
+- MIG devices are **not persistent across reboots**. Use [nvidia-mig-parted](https://github.com/NVIDIA/mig-parted) for automation, or create a startup script to recreate instances.
+- **Stop all GPU workloads** (Docker apps, containers) before enabling/disabling MIG mode or creating/destroying instances.
+- `+gfx` instances can run both CUDA and graphics workloads. Standard instances are CUDA-only. For most TrueNAS container workloads (Plex, Jellyfin, Frigate), standard compute profiles are sufficient.
+- MIG instance UUIDs change each time instances are recreated, so app GPU assignments will need updating after a reboot if you recreate instances.
 
 ## Building from Source
 
