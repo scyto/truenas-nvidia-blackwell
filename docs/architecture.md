@@ -115,7 +115,7 @@ If a run times out partway through, the caches are saved and the next run resume
 
 8. **Extract nvidia.raw** -- Mounts the rootfs squashfs and copies out `nvidia.raw` from `/usr/share/truenas/sysext-extensions/`.
 
-9. **DisplayModeSelector injection** (optional) -- If a URL is provided, the nvidia.raw is unpacked, the DisplayModeSelector binary is added, and it's repacked. This is for Blackwell Workstation GPUs that need display mode switching.
+9. **DisplayModeSelector injection** (optional) -- If a `display_mode_selector_url` is provided, the nvidia.raw is unpacked, the DisplayModeSelector binary is added, and it's repacked. Download from [developer.nvidia.com/displaymodeselector](https://developer.nvidia.com/displaymodeselector). Required for Blackwell Workstation GPUs to switch to compute display mode before enabling MIG.
 
 10. **Create release** -- Publishes a GitHub release with nvidia.raw, checksums, and install/restore scripts.
 

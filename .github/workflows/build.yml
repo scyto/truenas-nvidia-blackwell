@@ -16,7 +16,7 @@ on:
         required: true
         default: 'Goldeye'
       display_mode_selector_url:
-        description: 'Optional: URL to DisplayModeSelector .run or .tar.gz (leave empty to skip)'
+        description: 'Optional: URL to DisplayModeSelector package from developer.nvidia.com/displaymodeselector (leave empty to skip)'
         required: false
         default: ''
 
@@ -431,10 +431,10 @@ jobs:
           echo "Extracted nvidia.raw:"
           ls -lh ../nvidia.raw
 
-      - name: Inject DisplayModeSelector into sysext (if provided)
+      - name: Inject displaymodeselector into sysext (if provided)
         if: inputs.display_mode_selector_url != ''
         run: |
-          echo "Downloading DisplayModeSelector..."
+          echo "Downloading displaymodeselector..."
           curl -fSL "${{ inputs.display_mode_selector_url }}" -o /tmp/displaymodeselector_pkg
 
           mkdir -p /tmp/nvidia-sysext
@@ -444,30 +444,36 @@ jobs:
           if echo "$FILE_TYPE" | grep -q "gzip"; then
             mkdir -p /tmp/dms_extract
             tar xzf /tmp/displaymodeselector_pkg -C /tmp/dms_extract
-            sudo find /tmp/dms_extract -name "DisplayModeSelector" -exec cp {} /tmp/nvidia-sysext/usr/bin/ \;
+            DMS_BIN=$(find /tmp/dms_extract -iname "displaymodeselector" -type f | head -1)
+            if [ -n "$DMS_BIN" ]; then
+              sudo cp "$DMS_BIN" /tmp/nvidia-sysext/usr/bin/displaymodeselector
+            fi
           elif echo "$FILE_TYPE" | grep -q "executable"; then
             chmod +x /tmp/displaymodeselector_pkg
             mkdir -p /tmp/dms_extract
             /tmp/displaymodeselector_pkg --extract /tmp/dms_extract 2>/dev/null \
-              || sudo cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/DisplayModeSelector
+              || sudo cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/displaymodeselector
             if [ -d /tmp/dms_extract ]; then
-              sudo find /tmp/dms_extract -name "DisplayModeSelector" -exec cp {} /tmp/nvidia-sysext/usr/bin/ \;
+              DMS_BIN=$(find /tmp/dms_extract -iname "displaymodeselector" -type f | head -1)
+              if [ -n "$DMS_BIN" ]; then
+                sudo cp "$DMS_BIN" /tmp/nvidia-sysext/usr/bin/displaymodeselector
+              fi
             fi
           else
             echo "WARNING: Unknown package format, attempting direct copy"
-            sudo cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/DisplayModeSelector
+            sudo cp /tmp/displaymodeselector_pkg /tmp/nvidia-sysext/usr/bin/displaymodeselector
           fi
 
-          sudo chmod +x /tmp/nvidia-sysext/usr/bin/DisplayModeSelector 2>/dev/null || true
+          sudo chmod +x /tmp/nvidia-sysext/usr/bin/displaymodeselector 2>/dev/null || true
 
           sudo mksquashfs /tmp/nvidia-sysext nvidia.raw -noappend -comp zstd
-          echo "Rebuilt nvidia.raw with DisplayModeSelector:"
+          echo "Rebuilt nvidia.raw with displaymodeselector:"
           ls -lh nvidia.raw
 
       - name: List sysext contents
         run: |
           echo "=== nvidia.raw sysext contents (key binaries) ==="
-          sudo unsquashfs -l nvidia.raw | grep -E '(nvidia-smi|nvidia-persistenced|nvidia-fabric|DisplayMode|nvidia-cuda-mps|usr/bin/|usr/lib/x86_64)' | head -50
+          sudo unsquashfs -l nvidia.raw | grep -iE '(nvidia-smi|nvidia-persistenced|nvidia-fabric|displaymode|nvidia-cuda-mps|usr/bin/|usr/lib/x86_64)' | head -50
           echo "=== Full size ==="
           ls -lh nvidia.raw
 

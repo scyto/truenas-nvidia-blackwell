@@ -68,7 +68,7 @@ The sysext includes all standard NVIDIA driver userspace tools:
 - **nvidia-cuda-mps-control / nvidia-cuda-mps-server** — Multi-Process Service
 - All standard driver libraries and kernel modules
 
-> **DisplayModeSelector**: Required for Workstation Edition MIG setup (see below). Can optionally be included in the sysext by providing its download URL when triggering the build workflow.
+- **displaymodeselector** — Required for Workstation Edition MIG setup (see below). Download separately from [developer.nvidia.com/displaymodeselector](https://developer.nvidia.com/displaymodeselector) (requires NVIDIA developer account). The install script will automatically pick it up from your home directory, or it can be included in the sysext by providing its download URL when triggering the build workflow.
 
 ## MIG Setup Guide (RTX PRO 6000 Blackwell)
 
@@ -78,8 +78,8 @@ Reference: [NVIDIA Getting Started with MIG](https://docs.nvidia.com/datacenter/
 
 - **Workstation Edition only**: You must switch to **compute display mode** before MIG can be enabled. This disables physical display output on single-card systems.
   ```bash
-  # Use DisplayModeSelector v1.72.0+
-  DisplayModeSelector --gpumode compute
+  # Use displaymodeselector v1.72.0+
+  sudo displaymodeselector --gpumode compute
   ```
 
 - Verify vBIOS meets minimum requirements for your card
@@ -133,7 +133,7 @@ Go to **Actions** > **Build NVIDIA Sysext** > **Run workflow** with:
 | `truenas_version` | 25.10.2.1 | TrueNAS release version |
 | `nvidia_driver_version` | 580.126.18 | NVIDIA driver version |
 | `train_name` | Goldeye | TrueNAS train name |
-| `display_mode_selector_url` | *(empty)* | Optional URL to DisplayModeSelector package |
+| `display_mode_selector_url` | *(empty)* | Optional URL to [DisplayModeSelector](https://developer.nvidia.com/displaymodeselector) package |
 
 The build takes 1-3 hours. It uses TrueNAS's [scale-build](https://github.com/truenas/scale-build) system to compile the driver against the exact kernel shipped in the target TrueNAS version.
 

@@ -14,6 +14,7 @@ NVIDIA_RAW="${SYSEXT_DIR}/nvidia.raw"
 
 cleanup() {
     rm -f /tmp/nvidia.raw /tmp/nvidia.raw.sha256
+    rm -rf /tmp/nvidia-sysext-unpack
 }
 trap cleanup EXIT
 
@@ -65,6 +66,37 @@ else:
     fi
     cd -
     echo "Checksum OK"
+fi
+
+# Inject displaymodeselector into nvidia.raw if found in user's home directory
+CALLER_HOME=$(eval echo "~${SUDO_USER:-root}")
+DMS_SRC=""
+for candidate in "${CALLER_HOME}/displaymodeselector" "${CALLER_HOME}/DisplayModeSelector"; do
+    if [ -f "$candidate" ]; then
+        DMS_SRC="$candidate"
+        break
+    fi
+done
+
+if [ -n "$DMS_SRC" ]; then
+    if command -v unsquashfs &>/dev/null && command -v mksquashfs &>/dev/null; then
+        echo "Found displaymodeselector at ${DMS_SRC}, injecting into nvidia.raw..."
+        unsquashfs -d /tmp/nvidia-sysext-unpack /tmp/nvidia.raw
+        cp "$DMS_SRC" /tmp/nvidia-sysext-unpack/usr/bin/displaymodeselector
+        chmod +x /tmp/nvidia-sysext-unpack/usr/bin/displaymodeselector
+        mksquashfs /tmp/nvidia-sysext-unpack /tmp/nvidia.raw -noappend -comp zstd
+        rm -rf /tmp/nvidia-sysext-unpack
+        echo "displaymodeselector injected into nvidia.raw"
+    else
+        echo "WARNING: squashfs-tools not found, cannot inject displaymodeselector into sysext"
+        echo "  Install squashfs-tools or include displaymodeselector via the build workflow"
+    fi
+else
+    echo ""
+    echo "NOTE: displaymodeselector not found in ${CALLER_HOME}/"
+    echo "  MIG requires displaymodeselector to switch to compute display mode."
+    echo "  Download it from https://developer.nvidia.com/displaymodeselector"
+    echo "  Place it in your home directory and re-run this script to include it."
 fi
 
 echo ""
