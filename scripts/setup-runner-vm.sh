@@ -111,10 +111,15 @@ else
   echo "Cloud image already downloaded, skipping."
 fi
 
-echo "=== Step 2: Install cloud-image-utils (if needed) ==="
-if ! command -v cloud-localds &>/dev/null; then
-  apt-get update
-  apt-get install -y cloud-image-utils
+echo "=== Step 2: Verify required tools ==="
+# cloud-localds creates a seed ISO for cloud-init. If it's not available,
+# we can use genisoimage or xorriso directly (TrueNAS blocks apt-get).
+if ! command -v cloud-localds &>/dev/null && \
+   ! command -v genisoimage &>/dev/null && \
+   ! command -v xorriso &>/dev/null; then
+  echo "ERROR: Need cloud-localds, genisoimage, or xorriso to create cloud-init seed."
+  echo "None of these are available on this system."
+  exit 1
 fi
 
 echo "=== Step 3: Create VM disk (zvol) ==="
@@ -256,8 +261,16 @@ instance-id: ${VM_NAME}
 local-hostname: ${VM_NAME}
 METADATA
 
-cloud-localds /mnt/${POOL}/isos/${VM_NAME}-seed.img \
-  ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
+SEED_IMG="/mnt/${POOL}/isos/${VM_NAME}-seed.img"
+if command -v cloud-localds &>/dev/null; then
+  cloud-localds "${SEED_IMG}" ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
+elif command -v genisoimage &>/dev/null; then
+  genisoimage -output "${SEED_IMG}" -volid cidata -joliet -rock \
+    ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
+elif command -v xorriso &>/dev/null; then
+  xorriso -as genisoimage -output "${SEED_IMG}" -volid cidata -joliet -rock \
+    ${SEED_DIR}/user-data ${SEED_DIR}/meta-data
+fi
 
 rm -rf ${SEED_DIR}
 echo "Seed image created: /mnt/${POOL}/isos/${VM_NAME}-seed.img"
