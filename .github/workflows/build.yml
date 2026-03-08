@@ -152,12 +152,16 @@ jobs:
           restore-keys: |
             ccache-${{ inputs.truenas_version }}-
 
-      - name: Patch Makefile for modern setuptools compatibility
+      - name: Patch scale-build for GitHub runner compatibility
         run: |
           # setuptools ≥72 removed 'setup.py install' support.
-          # Python 3.11 from deadsnakes ships recent pip → latest setuptools → breaks.
-          # Replace 'python3 setup.py install' with 'pip install .' in the Makefile.
           sed -i 's/python3 setup.py install/pip install ./' scale-build/Makefile
+
+          # Shallow clone: scale-build only needs HEAD for building (rev-parse HEAD
+          # for hash, copytree into chroot for build). Full history wastes ~7 min on
+          # the kernel repo alone.
+          sed -i "s|\['clone', '--recurse', self.origin, self.source_path\]|['clone', '--depth', '1', '--recurse-submodules', '--shallow-submodules', self.origin, '-b', branch, self.source_path]|" \
+            scale-build/scale_build/packages/git.py
 
       - name: Checkout scale-build sources
         run: |

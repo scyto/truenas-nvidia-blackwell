@@ -186,6 +186,12 @@ Several patches are applied at build time on the runner to work around incompati
 
 **Fix**: `sed -i 's/python3 setup.py install/pip install ./' scale-build/Makefile`
 
+### git.py: Shallow clone for source checkout
+
+**Problem**: `make checkout` clones ~126 package git repositories. The kernel repo alone takes ~7 minutes for a full clone, dominating the 13-minute cached build time.
+
+**Fix**: Patch the clone command in `scale_build/packages/git.py` to use `--depth 1 --recurse-submodules --shallow-submodules -b <branch>`. This fetches only the tip commit of the target branch. scale-build only needs HEAD for building: `rev-parse HEAD` for change detection, and the working tree is copied into the chroot via `copytree`. No git history is used during the build phase.
+
 ### extensions.py: Remove os.makedirs before unsquashfs
 
 **Problem**: scale-build's `extensions.py` calls `os.makedirs()` to create a directory, then immediately calls `unsquashfs -dest <that directory>`. The `unsquashfs -dest` flag creates the destination directory itself and fails with "File exists" if the directory already exists.
