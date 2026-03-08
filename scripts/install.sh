@@ -396,6 +396,36 @@ MIGEOF
         if nvidia-smi mig -cgi "$MIG_PROFILES" -C; then
             echo "MIG instances created successfully"
             nvidia-smi mig -lgi 2>/dev/null || true
+
+            # Show MIG device UUIDs
+            echo ""
+            echo "MIG device UUIDs:"
+            nvidia-smi -L 2>/dev/null | grep -E '(GPU |MIG)' || true
+
+            # Show which TrueNAS apps have GPU assignments
+            echo ""
+            echo "TrueNAS app GPU assignments:"
+            midclt call app.query 2>/dev/null | python3 -c "
+import sys, json
+try:
+    apps = json.load(sys.stdin)
+    found = False
+    for app in apps:
+        name = app.get('name', '')
+        config = app.get('config', {}) or {}
+        resources = config.get('resources', {}) or {}
+        gpus = resources.get('gpus', {}) or {}
+        gpu_sel = gpus.get('nvidia_gpu_selection', {}) or {}
+        for slot, slot_cfg in gpu_sel.items():
+            if isinstance(slot_cfg, dict) and slot_cfg.get('use_gpu'):
+                uuid = slot_cfg.get('uuid', 'none')
+                print(f'  {name}: {uuid}')
+                found = True
+    if not found:
+        print('  (no apps with GPU assignments)')
+except Exception:
+    print('  (could not query apps)')
+" 2>/dev/null || echo "  (could not query apps)"
         else
             echo "WARNING: Failed to create MIG instances"
         fi
