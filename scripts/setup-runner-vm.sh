@@ -16,18 +16,13 @@
 
 set -euo pipefail
 
-# ── Configuration (edit these) ──────────────────────────────────────────────
+# ── Fixed configuration ─────────────────────────────────────────────────────
 POOL="rust"                    # ZFS pool for VM storage
 VM_NAME="github-runner"        # VM name
 VM_CPUS=8                      # vCPUs
 VM_RAM=32768                   # Memory in MB (32 GB)
 DISK_SIZE="200G"               # VM disk size
 RUNNER_USER="runner"           # Username inside the VM
-RUNNER_PASS="changeme"         # Password (change this!)
-NIC_BRIDGE="br0"               # Network bridge (run: midclt call interface.query | jq '.[].name')
-
-# Paste your SSH public key here (from ~/.ssh/id_ed25519.pub or similar)
-SSH_PUBKEY="PASTE_YOUR_SSH_PUBLIC_KEY_HERE"
 # ────────────────────────────────────────────────────────────────────────────
 
 if [ "$EUID" -ne 0 ]; then
@@ -35,10 +30,77 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-if [ "$SSH_PUBKEY" = "PASTE_YOUR_SSH_PUBLIC_KEY_HERE" ]; then
-  echo "ERROR: Edit this script and set SSH_PUBKEY to your public key"
+echo "=============================================="
+echo "  GitHub Actions Runner VM Setup"
+echo "=============================================="
+echo ""
+
+# ── Prompt for SSH public key ──
+echo "Paste your SSH public key (from ~/.ssh/id_ed25519.pub or similar):"
+read -p "> " SSH_PUBKEY
+if [ -z "$SSH_PUBKEY" ] || ! echo "$SSH_PUBKEY" | grep -qE '^ssh-(rsa|ed25519|ecdsa)'; then
+  echo "ERROR: That doesn't look like a valid SSH public key"
   exit 1
 fi
+echo ""
+
+# ── Prompt for password ──
+while true; do
+  read -s -p "Set a password for the '${RUNNER_USER}' user: " RUNNER_PASS
+  echo ""
+  read -s -p "Confirm password: " RUNNER_PASS_CONFIRM
+  echo ""
+  if [ "$RUNNER_PASS" = "$RUNNER_PASS_CONFIRM" ]; then
+    break
+  fi
+  echo "Passwords don't match, try again."
+  echo ""
+done
+if [ -z "$RUNNER_PASS" ]; then
+  echo "ERROR: Password cannot be empty"
+  exit 1
+fi
+echo ""
+
+# ── Prompt for network interface ──
+echo "Available network interfaces:"
+echo ""
+# Get interfaces and display them numbered
+INTERFACES=$(midclt call interface.query | jq -r '.[].name')
+i=1
+declare -a IF_ARRAY
+while IFS= read -r iface; do
+  IF_ARRAY[$i]="$iface"
+  # Show extra info if available
+  STATE=$(midclt call interface.query | jq -r ".[] | select(.name==\"$iface\") | .state.link_state // \"unknown\"")
+  echo "  $i) $iface ($STATE)"
+  i=$((i + 1))
+done <<< "$INTERFACES"
+echo ""
+read -p "Select interface number [1]: " NIC_CHOICE
+NIC_CHOICE=${NIC_CHOICE:-1}
+NIC_BRIDGE="${IF_ARRAY[$NIC_CHOICE]}"
+if [ -z "$NIC_BRIDGE" ]; then
+  echo "ERROR: Invalid selection"
+  exit 1
+fi
+echo "Using: $NIC_BRIDGE"
+echo ""
+
+echo "=== Configuration ==="
+echo "  VM:        ${VM_NAME} (${VM_CPUS} vCPU, $((VM_RAM / 1024))GB RAM, ${DISK_SIZE} disk)"
+echo "  Pool:      ${POOL}"
+echo "  User:      ${RUNNER_USER}"
+echo "  NIC:       ${NIC_BRIDGE}"
+echo "  SSH key:   ${SSH_PUBKEY:0:30}..."
+echo ""
+read -p "Continue? [Y/n] " CONFIRM
+CONFIRM=${CONFIRM:-Y}
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+  echo "Aborted."
+  exit 0
+fi
+echo ""
 
 echo "=== Step 1: Download Ubuntu 22.04 cloud image ==="
 mkdir -p /mnt/${POOL}/isos
