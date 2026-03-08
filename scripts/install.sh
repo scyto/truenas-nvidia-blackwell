@@ -157,7 +157,7 @@ USR_DATASET=$(zfs list -H -o name /usr)
 echo "Setting ${USR_DATASET} to writable..."
 zfs set readonly=off "${USR_DATASET}"
 
-# Backup existing nvidia.raw
+# Backup existing nvidia.raw (original will be saved to persistent storage later)
 if [ -f "${NVIDIA_RAW}" ]; then
     echo "Backing up existing nvidia.raw..."
     cp "${NVIDIA_RAW}" "${NVIDIA_RAW}.bak"
@@ -232,7 +232,12 @@ echo "Persistent config directory: ${PERSIST_DIR}"
 mkdir -p "$PERSIST_DIR"
 
 # --- Backup nvidia.raw to persistent storage ---
-echo "Backing up nvidia.raw to persistent storage..."
+# Save the original (stock TrueNAS) nvidia.raw if we haven't already
+if [ -f "${NVIDIA_RAW}.bak" ] && [ ! -f "${PERSIST_DIR}/nvidia-original.raw" ]; then
+    echo "Saving original nvidia.raw to persistent storage..."
+    cp "${NVIDIA_RAW}.bak" "${PERSIST_DIR}/nvidia-original.raw"
+fi
+echo "Backing up custom nvidia.raw to persistent storage..."
 cp /tmp/nvidia.raw "${PERSIST_DIR}/nvidia.raw"
 
 # --- Write PREINIT script to persistent storage ---

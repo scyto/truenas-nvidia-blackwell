@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Restores the original nvidia.raw from backup.
-# Run this if you need to roll back to the TrueNAS-shipped driver.
+# Restores the original nvidia.raw from backup and cleans up MIG + persistence.
+# Looks for the original nvidia.raw in persistent storage first, then /usr.
 
 set -euo pipefail
 
@@ -8,22 +8,31 @@ SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
 NVIDIA_RAW="${SYSEXT_DIR}/nvidia.raw"
 NVIDIA_BAK="${SYSEXT_DIR}/nvidia.raw.bak"
 
-if [ ! -f "${NVIDIA_BAK}" ]; then
-    echo "ERROR: No backup found at ${NVIDIA_BAK}"
-    echo "Cannot restore — the original nvidia.raw was not backed up during install."
-    exit 1
+# --- Find original nvidia.raw backup ---
+# Prefer persistent copy in .config (survives TrueNAS updates and repeated restores)
+ORIGINAL_BAK=""
+for f in /mnt/*/.config/nvidia-gpu/nvidia-original.raw; do
+    [ -f "$f" ] && ORIGINAL_BAK="$f" && break
+done
+# Fallback to .bak in /usr (created during install, but fragile)
+if [ -z "$ORIGINAL_BAK" ] && [ -f "$NVIDIA_BAK" ]; then
+    ORIGINAL_BAK="$NVIDIA_BAK"
 fi
 
-echo "=== Restoring original nvidia.raw ==="
+RESTORE_SYSEXT=true
+if [ -z "$ORIGINAL_BAK" ]; then
+    echo "NOTE: No original nvidia.raw backup found. Will clean up MIG and persistence only."
+    RESTORE_SYSEXT=false
+fi
+
+echo "=== Restore / Cleanup ==="
 
 # --- Step 1: Stop Docker/apps so GPU is released ---
 echo "Stopping Docker and apps (releasing GPU)..."
 midclt call docker.update '{"nvidia": false}'
 
-# Wait for Docker to fully stop so GPU processes are gone
-echo "Waiting for Docker to stop..."
+echo "Waiting for GPU processes to stop..."
 for attempt in $(seq 1 24); do
-    # Check if any GPU processes are still running
     GPU_PROCS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)
     if [ "${GPU_PROCS:-0}" -eq 0 ]; then
         echo "GPU released (no processes running)"
@@ -42,12 +51,10 @@ done
 echo ""
 echo "=== Cleaning up MIG ==="
 
-# Destroy MIG instances
 echo "Destroying MIG instances..."
 nvidia-smi mig -dci 2>/dev/null || true
 nvidia-smi mig -dgi 2>/dev/null || true
 
-# Disable MIG mode
 MIG_CUR=$(nvidia-smi --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null || echo "N/A")
 if [ "$MIG_CUR" = "Enabled" ]; then
     echo "Disabling MIG mode..."
@@ -60,38 +67,35 @@ if [ "$MIG_CUR" = "Enabled" ]; then
     fi
 fi
 
-# Disable MIG setup service
 systemctl disable nvidia-mig-setup.service 2>/dev/null || true
 
-# --- Step 3: Replace nvidia.raw ---
-echo ""
-echo "=== Replacing nvidia.raw ==="
+# --- Step 3: Replace nvidia.raw (if we have the original) ---
+if [ "$RESTORE_SYSEXT" = "true" ]; then
+    echo ""
+    echo "=== Restoring original nvidia.raw ==="
+    echo "Using backup: ${ORIGINAL_BAK}"
 
-systemd-sysext unmerge
+    systemd-sysext unmerge
 
-# Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr)
-zfs set readonly=off "${USR_DATASET}"
+    USR_DATASET=$(zfs list -H -o name /usr)
+    zfs set readonly=off "${USR_DATASET}"
 
-# Restore backup
-echo "Restoring backup..."
-rm -f "${NVIDIA_RAW}"
-mv "${NVIDIA_BAK}" "${NVIDIA_RAW}"
+    cp "$ORIGINAL_BAK" "${NVIDIA_RAW}"
+    # Clean up the .bak in /usr if it exists
+    rm -f "${NVIDIA_BAK}"
 
-# Restore read-only
-zfs set readonly=on "${USR_DATASET}"
+    zfs set readonly=on "${USR_DATASET}"
 
-# Re-enable NVIDIA support
-echo "Merging sysext and re-enabling NVIDIA..."
-systemd-sysext merge
-systemctl daemon-reload
+    echo "Merging sysext and re-enabling NVIDIA..."
+    systemd-sysext merge
+    systemctl daemon-reload
+fi
+
 midclt call docker.update '{"nvidia": true}'
 
 echo ""
-echo "=== Restore complete ==="
 if command -v nvidia-smi &>/dev/null; then
-    echo "Driver version:"
-    nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || true
+    echo "Driver version: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo 'unknown')"
 fi
 
 # --- Step 4: Clean up persistence ---
@@ -120,7 +124,7 @@ else
     echo "No PREINIT script found to deregister"
 fi
 
-# Remove persistent config
+# Remove persistent config (including nvidia-original.raw and custom nvidia.raw)
 for d in /mnt/*/.config/nvidia-gpu; do
     if [ -d "$d" ]; then
         echo "Removing persistent config: $d"
@@ -130,7 +134,7 @@ done
 
 echo "Persistence cleanup complete"
 
-# --- Step 5: Wait for Docker to settle before returning ---
+# --- Step 5: Wait for Docker to settle ---
 echo ""
 echo "Waiting for Docker to settle..."
 for attempt in $(seq 1 18); do
