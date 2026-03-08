@@ -510,7 +510,7 @@ jobs:
       - name: Inject MIG setup service into sysext
         run: |
           echo "Injecting MIG setup service into nvidia.raw..."
-          mkdir -p /tmp/nvidia-mig-inject
+          sudo rm -rf /tmp/nvidia-mig-inject
           sudo unsquashfs -d /tmp/nvidia-mig-inject nvidia.raw
 
           # Add MIG setup script
