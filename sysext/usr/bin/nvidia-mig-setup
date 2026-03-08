@@ -62,17 +62,17 @@ nvidia-smi mig -lgi 2>/dev/null || true
 
 ALL_MIG_UUIDS=()
 while IFS= read -r line; do
-    if echo "$line" | grep -qP 'MIG.*UUID:'; then
-        uuid=$(echo "$line" | grep -oP 'UUID:\s+\K[^)]+')
-        ALL_MIG_UUIDS+=("$uuid")
+    if echo "$line" | grep -q 'MIG.*UUID:'; then
+        uuid=$(echo "$line" | sed -n 's/.*UUID: \([^)]*\)).*/\1/p')
+        [ -n "$uuid" ] && ALL_MIG_UUIDS+=("$uuid")
     fi
 done < <(nvidia-smi -L 2>/dev/null)
 
 GI_PROFILES=()
 while IFS= read -r line; do
-    if echo "$line" | grep -qP 'Profile ID\s+:'; then
-        pid=$(echo "$line" | grep -oP 'Profile ID\s+:\s+\K[0-9]+')
-        GI_PROFILES+=("$pid")
+    if echo "$line" | grep -q 'Profile ID'; then
+        pid=$(echo "$line" | sed -n 's/.*Profile ID[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+        [ -n "$pid" ] && GI_PROFILES+=("$pid")
     fi
 done < <(nvidia-smi mig -lgi 2>/dev/null)
 

@@ -416,7 +416,7 @@ MIGEOF
 
             # Build MIG device list with types
             # Use MIG_PROFILES order (matches creation order = UUID order)
-            mapfile -t MIG_UUIDS < <(nvidia-smi -L 2>/dev/null | grep -oP 'UUID:\s+\KMIG-[^)]+')
+            mapfile -t MIG_UUIDS < <(nvidia-smi -L 2>/dev/null | grep 'MIG' | sed -n 's/.*UUID: \(MIG-[^)]*\)).*/\1/p')
             mapfile -t MIG_NAMES < <(nvidia-smi -L 2>/dev/null | grep 'MIG' | sed 's/.*MIG /MIG /' | sed 's/[[:space:]]*Device.*//')
             IFS=',' read -ra PROFILE_ARRAY <<< "$MIG_PROFILES"
 
