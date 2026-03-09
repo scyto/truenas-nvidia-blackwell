@@ -81,8 +81,8 @@ if [ "$RESTORE_SYSEXT" = "true" ]; then
     zfs set readonly=off "${USR_DATASET}"
 
     cp "$ORIGINAL_BAK" "${NVIDIA_RAW}"
-    # Clean up the .bak in /usr if it exists
-    rm -f "${NVIDIA_BAK}"
+    # Clean up the .bak in /usr if it exists (must be while writable)
+    [ -f "${NVIDIA_BAK}" ] && rm -f "${NVIDIA_BAK}" 2>/dev/null || true
 
     zfs set readonly=on "${USR_DATASET}"
 

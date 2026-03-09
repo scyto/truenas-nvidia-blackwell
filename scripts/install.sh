@@ -173,6 +173,21 @@ zfs set readonly=on "${USR_DATASET}"
 # Re-enable NVIDIA support
 echo "Merging sysext and re-enabling NVIDIA..."
 systemd-sysext merge
+
+# Verify nvidia was picked up by sysext
+if ! [ -x /usr/bin/nvidia-smi ]; then
+    echo ""
+    echo "ERROR: nvidia-smi not found after sysext merge."
+    echo "  The nvidia.raw sysext was not loaded correctly."
+    echo "  Check: ls -la ${NVIDIA_RAW}"
+    echo "  Check: systemd-sysext status"
+    echo ""
+    echo "Aborting — cannot continue without NVIDIA drivers."
+    # Try to re-enable Docker without NVIDIA so apps aren't stuck
+    midclt call docker.update '{"nvidia": false}' 2>/dev/null
+    exit 1
+fi
+
 systemctl daemon-reload
 midclt call docker.update '{"nvidia": true}'
 
@@ -194,14 +209,10 @@ echo "=== Installation complete ==="
 echo ""
 
 # Verify
-if [ -x /usr/bin/nvidia-smi ]; then
-    DRIVER_VER=$(/usr/bin/nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo "unknown")
-    PERSIST=$(/usr/bin/nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null || echo "unknown")
-    MIG_CUR=$(/usr/bin/nvidia-smi --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null || echo "unknown")
-    echo "Driver: ${DRIVER_VER}  |  Persistence: ${PERSIST}  |  MIG: ${MIG_CUR}"
-else
-    echo "nvidia-smi not found — you may need to restart Docker services"
-fi
+DRIVER_VER=$(/usr/bin/nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo "unknown")
+PERSIST=$(/usr/bin/nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null || echo "unknown")
+MIG_CUR=$(/usr/bin/nvidia-smi --query-gpu=mig.mode.current --format=csv,noheader 2>/dev/null || echo "unknown")
+echo "Driver: ${DRIVER_VER}  |  Persistence: ${PERSIST}  |  MIG: ${MIG_CUR}"
 
 # ==========================================================================
 # Persistence setup — survives reboots and TrueNAS updates
