@@ -524,7 +524,7 @@ MIGEOF
                     5)  dtype="compute only (2g.48gb)" ;;
                     0)  dtype="compute only (4g.96gb)" ;;
                     64) dtype="compute + all media engines (2g.48gb)" ;;
-                    21) dtype="compute + all media engines (1g.24gb)" ;;
+                    21) dtype="compute + media + OFA (1g.24gb)" ;;
                     65) dtype="compute + all media engines (1g.24gb)" ;;
                     67) dtype="compute, no media (1g.24gb)" ;;
                     66) dtype="compute, no media (2g.48gb)" ;;
