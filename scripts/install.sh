@@ -150,6 +150,8 @@ fi
 # Disable NVIDIA support temporarily
 echo "Disabling NVIDIA support..."
 midclt call docker.update '{"nvidia": false}'
+echo "[diag] After docker.update false — sysext status:"
+systemd-sysext status 2>&1 | head -5 || true
 systemd-sysext unmerge
 
 # Make /usr writable
@@ -402,10 +404,21 @@ MIGEOF
     # Ensure sysext overlay is still intact before MIG operations
     # (middleware async sysext remount from docker.update can undo our merge)
     if ! [ -x /usr/bin/nvidia-smi ]; then
-        echo "[diag] nvidia-smi disappeared before MIG enable — re-merging sysext..."
+        echo "[diag] nvidia-smi disappeared before MIG enable"
+        echo "[diag] Current sysext status:"
+        systemd-sysext status 2>&1 || true
+        echo "[diag] Unmerging stale sysext..."
+        systemd-sysext unmerge 2>/dev/null || true
+        echo "[diag] Re-merging sysext..."
         systemd-sysext merge
         systemctl daemon-reload
-        echo "[diag] After re-merge: $(ls /usr/bin/nvidia-smi 2>&1)"
+        echo "[diag] After re-merge: nvidia-smi exists=$(ls /usr/bin/nvidia-smi 2>&1)"
+        echo "[diag] sysext status after re-merge:"
+        systemd-sysext status 2>&1 || true
+        if ! [ -x /usr/bin/nvidia-smi ]; then
+            echo "[diag] ERROR: nvidia-smi still missing after re-merge!"
+            echo "[diag] Extensions dir: $(ls /usr/share/truenas/sysext-extensions/ 2>&1)"
+        fi
     fi
 
     # Enable MIG mode on the GPU
@@ -436,6 +449,8 @@ MIGEOF
         /usr/bin/nvidia-smi mig -dgi 2>/dev/null || true
         if /usr/bin/nvidia-smi mig -cgi "$MIG_PROFILES" -C; then
             echo "MIG instances created successfully"
+            echo "[diag] Right after MIG creation: nvidia-smi exists=$(ls /usr/bin/nvidia-smi 2>&1)"
+            echo "[diag] sysext status: $(systemd-sysext status 2>&1 | head -3)"
             echo ""
 
             # Build MIG device list with types
@@ -445,11 +460,21 @@ MIGEOF
 
             # Ensure sysext overlay is still intact (middleware async remount can undo it)
             if ! [ -x /usr/bin/nvidia-smi ]; then
-                echo "[diag] nvidia-smi disappeared before enumeration — re-merging sysext..."
+                echo "[diag] nvidia-smi disappeared before enumeration"
+                echo "[diag] Current sysext status:"
+                systemd-sysext status 2>&1 || true
+                echo "[diag] Unmerging stale sysext..."
+                systemd-sysext unmerge 2>/dev/null || true
+                echo "[diag] Re-merging sysext..."
                 systemd-sysext merge
                 systemctl daemon-reload
                 echo "[diag] After re-merge: nvidia-smi exists=$(ls /usr/bin/nvidia-smi 2>&1)"
-                echo "[diag] sysext status: $(systemd-sysext status 2>&1 | head -3)"
+                echo "[diag] sysext status after re-merge:"
+                systemd-sysext status 2>&1 || true
+                if ! [ -x /usr/bin/nvidia-smi ]; then
+                    echo "[diag] ERROR: nvidia-smi still missing after re-merge!"
+                    echo "[diag] Extensions dir: $(ls /usr/share/truenas/sysext-extensions/ 2>&1)"
+                fi
             fi
 
             mapfile -t MIG_UUIDS < <(/usr/bin/nvidia-smi -L 2>/dev/null | grep 'MIG' | sed -n 's/.*UUID: \(MIG-[^)]*\)).*/\1/p')
