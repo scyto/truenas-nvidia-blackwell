@@ -112,7 +112,7 @@ import sys, json
 try:
     scripts = json.load(sys.stdin)
     for s in scripts:
-        if 'nvidia-postinit' in s.get('script', '') or 'nvidia-postinit' in s.get('command', '') or 'nvidia-gpu' in s.get('script', '') or 'nvidia-gpu' in s.get('command', ''):
+        if 'nvidia-preinit' in s.get('script', '') or 'nvidia-preinit' in s.get('command', '') or 'nvidia-postinit' in s.get('script', '') or 'nvidia-postinit' in s.get('command', '') or 'nvidia-gpu' in s.get('script', '') or 'nvidia-gpu' in s.get('command', ''):
             print(s['id'], end='')
             break
 except Exception:

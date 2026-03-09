@@ -263,10 +263,10 @@ echo "Backing up custom nvidia.raw to persistent storage..."
 cp /tmp/nvidia.raw "${PERSIST_DIR}/nvidia.raw"
 
 # --- Write PREINIT script to persistent storage ---
-# NOTE: This is an inline copy of scripts/nvidia-postinit.sh.
+# NOTE: This is an inline copy of scripts/nvidia-preinit.sh.
 # Keep both copies in sync when making changes.
 echo "Writing PREINIT script..."
-cat > "${PERSIST_DIR}/nvidia-postinit.sh" <<'POSTINIT_EOF'
+cat > "${PERSIST_DIR}/nvidia-preinit.sh" <<'PREINIT_EOF'
 #!/usr/bin/env bash
 # TrueNAS PREINIT script: reinstalls nvidia.raw sysext after OS updates.
 # Stored on persistent pool; registered via midclt during install.
@@ -274,7 +274,7 @@ cat > "${PERSIST_DIR}/nvidia-postinit.sh" <<'POSTINIT_EOF'
 
 set -uo pipefail
 
-log() { echo "[nvidia-postinit] $*"; }
+log() { echo "[nvidia-preinit] $*"; }
 
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
@@ -361,11 +361,11 @@ midclt call docker.update '{"nvidia": true}' 2>/dev/null \
 
 log "nvidia.raw reinstalled successfully"
 exit 0
-POSTINIT_EOF
-chmod +x "${PERSIST_DIR}/nvidia-postinit.sh"
+PREINIT_EOF
+chmod +x "${PERSIST_DIR}/nvidia-preinit.sh"
 
 # --- Register PREINIT script via midclt ---
-PREINIT_SCRIPT="${PERSIST_DIR}/nvidia-postinit.sh"
+PREINIT_SCRIPT="${PERSIST_DIR}/nvidia-preinit.sh"
 echo "Registering PREINIT script..."
 
 EXISTING_ID=$(midclt call initshutdownscript.query 2>/dev/null \
@@ -375,7 +375,7 @@ try:
     scripts = json.load(sys.stdin)
     for s in scripts:
         cmd = s.get('command', '') or s.get('script', '')
-        if 'nvidia-postinit' in cmd or 'nvidia-gpu' in cmd:
+        if 'nvidia-preinit' in cmd or 'nvidia-postinit' in cmd or 'nvidia-gpu' in cmd:
             print(s['id'], end='')
             break
 except Exception:
@@ -796,7 +796,7 @@ echo "=== Persistence setup complete ==="
 echo ""
 echo "Persistent config: ${PERSIST_DIR}/"
 echo "  nvidia.raw      — backup for post-update reinstall"
-echo "  nvidia-postinit.sh — runs on every boot (registered as PREINIT)"
+echo "  nvidia-preinit.sh — runs on every boot (registered as PREINIT)"
 [ -n "$MIG_PROFILES" ] && echo "  mig.conf         — MIG profiles: ${MIG_PROFILES}"
 echo ""
 if [ "${NEEDS_REBOOT:-false}" = "true" ]; then

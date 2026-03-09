@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-log() { echo "[nvidia-postinit] $*"; }
+log() { echo "[nvidia-preinit] $*"; }
 
 # --- Find persistent config via glob ---
 PERSIST_DIR=""
