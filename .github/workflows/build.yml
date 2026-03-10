@@ -426,6 +426,33 @@ jobs:
           out = [l for l in lines if 'os.makedirs(chroot' not in l and 'os.makedirs(self.chroot)' not in l]
           p.write_text(''.join(out))
           print(f'extensions.py: removed {len(lines) - len(out)} os.makedirs line(s)')
+
+          # Include NVIDIA LICENSE in sysext for redistribution compliance (Section 1.1d).
+          # The --silent installer doesn't place it, so extract from the .run file post-install.
+          src = p.read_text()
+          old = '        os.unlink(driver)'
+          new = '''        # Extract and preserve the NVIDIA license for redistribution compliance
+                  license_dir = os.path.join(self.chroot, \"usr/share/doc/NVIDIA_GLX-1.0\")
+                  os.makedirs(license_dir, exist_ok=True)
+                  run(
+                      [f\"{driver}\", \"--extract-only\", \"--target\", f\"{self.chroot}/nvidia-license-tmp\"],
+                      log=False,
+                  )
+                  license_src = os.path.join(self.chroot, \"nvidia-license-tmp\", \"LICENSE\")
+                  if os.path.exists(license_src):
+                      shutil.copyfile(license_src, os.path.join(license_dir, \"LICENSE\"))
+                  shutil.rmtree(os.path.join(self.chroot, \"nvidia-license-tmp\"))
+
+                  os.unlink(driver)'''
+          # Fix indentation: the new block uses 18-space indent from heredoc, normalize to 8-space Python indent
+          import textwrap
+          new = textwrap.dedent(new)
+          new = textwrap.indent(new, '        ')
+          if old in src:
+              p.write_text(src.replace(old, new, 1))
+              print('extensions.py: added NVIDIA LICENSE extraction')
+          else:
+              print('WARNING: could not find os.unlink(driver) to patch')
           "
 
       - name: Build update image
@@ -533,7 +560,7 @@ jobs:
       - name: List sysext contents
         run: |
           echo "=== nvidia.raw sysext contents (key binaries) ==="
-          sudo unsquashfs -l nvidia.raw | grep -iE '(nvidia-smi|nvidia-persistenced|nvidia-fabric|displaymode|nvidia-cuda-mps|nvidia-mig|usr/bin/|usr/lib/x86_64|systemd/system)' | head -60
+          sudo unsquashfs -l nvidia.raw | grep -iE '(nvidia-smi|nvidia-persistenced|nvidia-fabric|displaymode|nvidia-cuda-mps|nvidia-mig|usr/bin/|usr/lib/x86_64|systemd/system|LICENSE)' | head -60
           echo "=== Full size ==="
           ls -lh nvidia.raw
 
