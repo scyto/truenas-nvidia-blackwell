@@ -5,6 +5,10 @@ on:
     - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -65,30 +69,62 @@ jobs:
         run: |
           echo "train=$(cat train | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Update tracked version
+      - name: Check if PR already exists
         if: steps.check_release.outputs.new_release == 'true'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo -n "${{ steps.check_release.outputs.new_version }}" > version
+          NEW_VERSION="${{ steps.check_release.outputs.new_version }}"
+          # Check for open PRs with matching branch name
+          EXISTING=$(gh pr list --state open --head "truenas-update/${NEW_VERSION}" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #${EXISTING} already exists for ${NEW_VERSION}"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create PR for new TrueNAS release
+        if: steps.check_release.outputs.new_release == 'true' && steps.existing_pr.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ steps.check_release.outputs.new_version }}"
+          NVIDIA_VERSION="${{ steps.nvidia.outputs.nvidia_version }}"
+          TRAIN="${{ steps.train.outputs.train }}"
+          BRANCH="truenas-update/${NEW_VERSION}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version
-          git commit -m "Update tracked TrueNAS version to ${{ steps.check_release.outputs.new_version }}"
-          git push
 
-      - name: Trigger build for new TrueNAS release
-        if: steps.check_release.outputs.new_release == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'build.yml',
-              ref: 'main',
-              inputs: {
-                truenas_version: '${{ steps.check_release.outputs.new_version }}',
-                nvidia_driver_version: '${{ steps.nvidia.outputs.nvidia_version }}',
-                train_name: '${{ steps.train.outputs.train }}'
-              }
-            });
-            console.log('Triggered build for TrueNAS ${{ steps.check_release.outputs.new_version }}');
+          # Create branch and update version files
+          git checkout -b "${BRANCH}"
+          echo -n "${NEW_VERSION}" > version
+
+          # Update build.yml default truenas_version (matches lines like: default: '25.10.2.1')
+          # This updates both workflow_dispatch and workflow_call defaults
+          sed -i "/truenas_version:/{n;n;s/default: '[0-9.]*'/default: '${NEW_VERSION}'/}" .github/workflows/build.yml
+
+          git add version .github/workflows/build.yml
+          git commit -m "Update TrueNAS version to ${NEW_VERSION}"
+          git push -u origin "${BRANCH}"
+
+          PR_BODY="## Summary
+          - New TrueNAS release detected: **${NEW_VERSION}**
+          - NVIDIA driver: **${NVIDIA_VERSION}**
+          - Train: **${TRAIN}**
+
+          ## Changes
+          - Updated \`version\` file to track new release
+          - Updated \`build.yml\` defaults to match
+
+          ## After merging
+          Trigger the **Build NVIDIA Sysext** workflow to build the new sysext.
+
+          Generated automatically by the TrueNAS release checker."
+
+          gh pr create \
+            --title "Update TrueNAS to ${NEW_VERSION}" \
+            --body "${PR_BODY}" \
+            --label "truenas-update"
