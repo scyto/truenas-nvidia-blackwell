@@ -1,5 +1,14 @@
 # Refactor: Lightweight MIG-Only Sysext (No Build System)
 
+## Starting Assumptions
+
+1. IX Systems are no longer maintaining the scale-build platform
+2. The 570.x drivers already included in TrueNAS support MIG (despite NVIDIA documentation suggesting 575+ is required)
+3. TrueNAS 26.04 will include the 590.x series open drivers
+4. The 590.x drivers will support MIG
+5. `displaymodeselector` is still required for Workstation Edition GPUs to switch to compute mode before enabling MIG
+6. The stock `nvidia.raw` sysext provides `nvidia-smi` (with all MIG subcommands); `nvidia-persistenced` is NOT included (we use `nvidia-smi -pm 1` instead)
+
 ## Context
 
 IX Systems is no longer maintaining the scale-build platform. TrueNAS 570.x drivers already support MIG, and 26.04 will ship 590.x open drivers. Since drivers are now included natively, we no longer need the 5-6 hour build pipeline that compiles NVIDIA 580.x drivers into a custom `nvidia.raw`. We only need to provide MIG setup tooling.
